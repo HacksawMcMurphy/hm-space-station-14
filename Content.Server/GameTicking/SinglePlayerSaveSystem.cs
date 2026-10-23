@@ -3,14 +3,15 @@ using Content.Shared.Administration;
 using Robust.Shared.Console;
 using Robust.Shared.EntitySerialization.Systems;
 using Robust.Shared.GameObjects;
+using Robust.Shared.Player;
 using Robust.Shared.Utility;
 
 namespace Content.Server.GameTicking;
 
 /// <summary>
 /// Persistence helpers for the offline single-player build.
-/// The save is a normal Robust map YAML stored in user data, so it survives
-/// application restarts without requiring a database or remote server.
+/// Saves are Robust map YAML stored in user data so the station survives
+/// application restarts without a database or external server.
 /// </summary>
 public sealed class SinglePlayerSaveSystem : EntitySystem
 {
@@ -23,6 +24,12 @@ public sealed class SinglePlayerSaveSystem : EntitySystem
 
     public static bool Enabled =>
         string.Equals(Environment.GetEnvironmentVariable("SS14_SINGLEPLAYER"), "1", StringComparison.Ordinal);
+
+    public override void Initialize()
+    {
+        base.Initialize();
+        _loader.OnIsSerializable += OnIsSerializable;
+    }
 
     public override void Update(float frameTime)
     {
@@ -47,6 +54,14 @@ public sealed class SinglePlayerSaveSystem : EntitySystem
         base.Shutdown();
     }
 
+    private void OnIsSerializable(Entity<MetaDataComponent> entity, ref bool serializable)
+    {
+        // ActorComponent is session state and is explicitly marked unsaved by RobustToolbox.
+        // Do not serialize the live session attachment; the character entity itself remains persistable.
+        if (TryComp<ActorComponent>(entity.Owner, out _))
+            serializable = false;
+    }
+
     public bool Save()
     {
         var ticker = EntityManager.System<ServerGameTicker>();
@@ -54,6 +69,23 @@ public sealed class SinglePlayerSaveSystem : EntitySystem
             return false;
 
         return _loader.TrySaveMap(ticker.DefaultMap, new ResPath(SavePath));
+    }
+
+    public bool TryLoadSavedMap(out MapId mapId)
+    {
+        mapId = default;
+
+        if (!Enabled || !_loader.TryLoadMap(
+                new ResPath(SavePath),
+                out var map,
+                out _,
+                DeserializationOptions.Default with { InitializeMaps = false }))
+        {
+            return false;
+        }
+
+        mapId = map.Value.Comp.MapId;
+        return true;
     }
 }
 
@@ -100,9 +132,7 @@ public sealed class SinglePlayerLoadCommand : LocalizedCommands
             return;
         }
 
-        // RestartRound performs the normal cleanup and then LoadMaps() will
-        // restore the persisted map before the new round starts.
         _entityManager.System<ServerGameTicker>().RestartRound();
-        shell.WriteLine("Single-player save loaded by restarting the current round.");
+        shell.WriteLine("Single-player save will be loaded after the current round is reset.");
     }
 }
